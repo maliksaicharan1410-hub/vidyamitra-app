@@ -1,0 +1,611 @@
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
+};
+
+const roleSkillsDatabase: Record<string, string[]> = {
+  'Software Engineer': ['JavaScript', 'Python', 'Java', 'Git', 'Data Structures', 'Algorithms', 'REST APIs', 'SQL', 'Testing'],
+  'Data Scientist': ['Python', 'R', 'SQL', 'Machine Learning', 'Statistics', 'Data Visualization', 'Pandas', 'NumPy', 'Scikit-learn'],
+  'Product Manager': ['Product Strategy', 'User Research', 'Agile', 'Data Analysis', 'Communication', 'Roadmapping', 'Stakeholder Management'],
+  'Web Developer': ['HTML', 'CSS', 'JavaScript', 'React', 'Node.js', 'Git', 'Responsive Design', 'REST APIs'],
+  'DevOps Engineer': ['Linux', 'Docker', 'Kubernetes', 'CI/CD', 'AWS', 'Terraform', 'Monitoring', 'Scripting'],
+  'UI/UX Designer': ['Figma', 'Adobe XD', 'User Research', 'Prototyping', 'Design Systems', 'Wireframing', 'HTML/CSS'],
+  'Machine Learning Engineer': ['Python', 'TensorFlow', 'PyTorch', 'Deep Learning', 'MLOps', 'Data Processing', 'Model Deployment'],
+  'Business Analyst': ['SQL', 'Excel', 'Data Analysis', 'Business Intelligence', 'Requirements Gathering', 'Tableau', 'Communication'],
+  'Full Stack Developer': ['JavaScript', 'React', 'Node.js', 'SQL', 'MongoDB', 'REST APIs', 'Git', 'DevOps Basics'],
+  'Cloud Architect': ['AWS', 'Azure', 'GCP', 'Networking', 'Security', 'Infrastructure as Code', 'Microservices', 'Kubernetes'],
+};
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
+  }
+
+  try {
+    const { user_id, target_role, current_skills } = await req.json();
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    let requiredSkills: string[] = [];
+
+    if (roleSkillsDatabase[target_role]) {
+      requiredSkills = roleSkillsDatabase[target_role];
+    } else {
+      const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+      if (openaiKey) {
+        const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            messages: [
+              { role: 'system', content: 'You are a career advisor expert.' },
+              { role: 'user', content: `List 8-10 essential skills required for a ${target_role} role. Return only a JSON array of skill names.` },
+            ],
+            temperature: 0.5,
+          }),
+        });
+
+        const aiData = await aiResponse.json();
+        requiredSkills = JSON.parse(aiData.choices[0].message.content);
+      } else {
+        requiredSkills = ['Communication', 'Problem Solving', 'Critical Thinking', 'Teamwork', 'Technical Skills', 'Project Management'];
+      }
+    }
+
+    const currentSkillsLower = current_skills.map((s: string) => s.toLowerCase());
+    const matchedSkills = requiredSkills.filter((skill) =>
+      currentSkillsLower.some((cs) => cs.includes(skill.toLowerCase()) || skill.toLowerCase().includes(cs))
+    );
+    const missingSkills = requiredSkills.filter((skill) => !matchedSkills.includes(skill));
+    const skillMatchPercentage = Math.round((matchedSkills.length / requiredSkills.length) * 100);
+
+    const skillGap = {
+      id: crypto.randomUUID(),
+      user_id,
+      target_role,
+      current_skills: matchedSkills,
+      required_skills: requiredSkills,
+      missing_skills: missingSkills,
+      skill_match_percentage: skillMatchPercentage,
+      created_at: new Date().toISOString(),
+    };
+
+    const { error: insertError } = await supabase
+      .from('skill_gaps')
+      .insert(skillGap);
+
+    if (insertError) throw insertError;
+
+    return new Response(
+      JSON.stringify({ skill_gap: skillGap }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
+});
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
+};
+
+function generateMockFeedback(answer: string, questionIndex: number): string {
+  const feedbackTemplates = [
+    'Good foundational understanding. Consider adding more specific examples to strengthen your response.',
+    'Strong technical knowledge demonstrated. Try to elaborate on the practical applications.',
+    'Clear explanation. You could improve by discussing edge cases or limitations.',
+    'Solid answer. Adding real-world scenarios would make your response more compelling.',
+    'Well articulated. Consider mentioning how this relates to current industry practices.',
+  ];
+  return feedbackTemplates[questionIndex % feedbackTemplates.length];
+}
+
+function calculateScores(answers: string[]): { overall: number; communication: number; technical: number; clarity: number } {
+  const avgLength = answers.reduce((sum, ans) => sum + ans.length, 0) / answers.length;
+
+  const communication = Math.min(100, Math.round((avgLength / 200) * 100));
+  const technical = Math.round(60 + Math.random() * 30);
+  const clarity = Math.round(65 + Math.random() * 25);
+  const overall = Math.round((communication + technical + clarity) / 3);
+
+  return {
+    overall: Math.min(100, overall),
+    communication: Math.min(100, communication),
+    technical: Math.min(100, technical),
+    clarity: Math.min(100, clarity),
+  };
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
+  }
+
+  try {
+    const { interview_id, user_id, answers } = await req.json();
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const { data: interviewData } = await supabase
+      .from('interviews')
+      .select('*')
+      .eq('id', interview_id)
+      .maybeSingle();
+
+    if (!interviewData) {
+      throw new Error('Interview not found');
+    }
+
+    let feedback: string[] = [];
+    const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+    if (openaiKey) {
+      const aiPrompt = `Evaluate these interview answers and provide constructive feedback for each.
+
+      Questions and Answers:
+      ${interviewData.questions.map((q: string, i: number) => `Q${i + 1}: ${q}\nA${i + 1}: ${answers[i]}`).join('\n\n')}
+
+      Provide:
+      1. Specific feedback for each answer (as a JSON array of strings)
+      2. Scores (0-100) for: overall, communication, technical, clarity (as a JSON object)
+
+      Format: { "feedback": ["feedback1", "feedback2", ...], "scores": { "overall": 0, "communication": 0, "technical": 0, "clarity": 0 } }`;
+
+      const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: 'You are an expert interviewer providing constructive feedback.' },
+            { role: 'user', content: aiPrompt },
+          ],
+          temperature: 0.7,
+        }),
+      });
+
+      const aiData = await aiResponse.json();
+      const result = JSON.parse(aiData.choices[0].message.content);
+      feedback = result.feedback;
+
+      const { error: updateError } = await supabase
+        .from('interviews')
+        .update({
+          answers,
+          feedback: result.feedback,
+          overall_score: result.scores.overall,
+          communication_score: result.scores.communication,
+          technical_score: result.scores.technical,
+          clarity_score: result.scores.clarity,
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', interview_id);
+
+      if (updateError) throw updateError;
+    } else {
+      feedback = answers.map((ans, idx) => generateMockFeedback(ans, idx));
+      const scores = calculateScores(answers);
+
+      const { error: updateError } = await supabase
+        .from('interviews')
+        .update({
+          answers,
+          feedback,
+          overall_score: scores.overall,
+          communication_score: scores.communication,
+          technical_score: scores.technical,
+          clarity_score: scores.clarity,
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', interview_id);
+
+      if (updateError) throw updateError;
+    }
+
+    const { data: updatedInterview } = await supabase
+      .from('interviews')
+      .select('*')
+      .eq('id', interview_id)
+      .maybeSingle();
+
+    return new Response(
+      JSON.stringify({ interview: updatedInterview }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
+});
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
+};
+
+const mockRoadmaps: Record<string, any> = {
+  'Software Engineer': {
+    phases: [
+      {
+        phase: 'Foundation',
+        duration: '2-3 months',
+        skills: ['Data Structures', 'Algorithms', 'System Design Basics'],
+        courses: [
+          { name: 'Data Structures & Algorithms', provider: 'Coursera', link: 'https://www.coursera.org/specializations/data-structures-algorithms' },
+          { name: 'CS50', provider: 'Harvard', link: 'https://cs50.harvard.edu/' },
+        ],
+        projects: ['Implement common data structures from scratch', 'Solve 50 LeetCode problems'],
+      },
+      {
+        phase: 'Core Development',
+        duration: '3-4 months',
+        skills: ['REST APIs', 'Testing', 'Version Control'],
+        courses: [
+          { name: 'The Complete Node.js Developer', provider: 'Udemy', link: 'https://www.udemy.com/course/the-complete-nodejs-developer-course-2/' },
+          { name: 'Testing JavaScript', provider: 'Frontend Masters', link: 'https://frontendmasters.com/' },
+        ],
+        projects: ['Build a REST API with authentication', 'Contribute to open source projects'],
+      },
+      {
+        phase: 'Advanced Topics',
+        duration: '2-3 months',
+        skills: ['System Design', 'Performance Optimization', 'Cloud Deployment'],
+        courses: [
+          { name: 'System Design Interview', provider: 'Educative', link: 'https://www.educative.io/courses/grokking-the-system-design-interview' },
+        ],
+        projects: ['Design and build a scalable application', 'Deploy application to cloud platform'],
+      },
+    ],
+  },
+  'Data Scientist': {
+    phases: [
+      {
+        phase: 'Mathematics & Statistics',
+        duration: '2-3 months',
+        skills: ['Statistics', 'Linear Algebra', 'Probability'],
+        courses: [
+          { name: 'Mathematics for Machine Learning', provider: 'Coursera', link: 'https://www.coursera.org/specializations/mathematics-machine-learning' },
+          { name: 'Statistics with Python', provider: 'DataCamp', link: 'https://www.datacamp.com/' },
+        ],
+        projects: ['Statistical analysis projects', 'Data visualization dashboard'],
+      },
+      {
+        phase: 'Machine Learning Fundamentals',
+        duration: '3-4 months',
+        skills: ['Machine Learning', 'Python', 'Pandas', 'NumPy', 'Scikit-learn'],
+        courses: [
+          { name: 'Machine Learning Specialization', provider: 'Coursera', link: 'https://www.coursera.org/specializations/machine-learning-introduction' },
+          { name: 'Python for Data Science', provider: 'DataCamp', link: 'https://www.datacamp.com/' },
+        ],
+        projects: ['Predictive modeling project', 'Classification and regression models'],
+      },
+      {
+        phase: 'Advanced ML & Deployment',
+        duration: '2-3 months',
+        skills: ['Deep Learning', 'MLOps', 'Model Deployment'],
+        courses: [
+          { name: 'Deep Learning Specialization', provider: 'Coursera', link: 'https://www.coursera.org/specializations/deep-learning' },
+        ],
+        projects: ['End-to-end ML pipeline', 'Deploy ML model as API'],
+      },
+    ],
+  },
+};
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
+  }
+
+  try {
+    const { user_id, target_role, missing_skills, current_skills } = await req.json();
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    let roadmapData: any;
+
+    if (mockRoadmaps[target_role]) {
+      roadmapData = mockRoadmaps[target_role];
+    } else {
+      const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+      if (openaiKey) {
+        const aiPrompt = `Create a detailed learning roadmap for becoming a ${target_role}.
+        Current skills: ${current_skills.join(', ')}
+        Missing skills: ${missing_skills.join(', ')}
+
+        Generate 3 phases with:
+        - Phase name and duration
+        - Skills to learn
+        - Recommended courses (with provider and link)
+        - Project ideas
+
+        Return as JSON with structure: { phases: [{ phase, duration, skills, courses: [{ name, provider, link }], projects }] }`;
+
+        const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            messages: [
+              { role: 'system', content: 'You are an expert career advisor and learning path designer.' },
+              { role: 'user', content: aiPrompt },
+            ],
+            temperature: 0.7,
+          }),
+        });
+
+        const aiData = await aiResponse.json();
+        roadmapData = JSON.parse(aiData.choices[0].message.content);
+      } else {
+        roadmapData = {
+          phases: [
+            {
+              phase: 'Foundation Building',
+              duration: '2-3 months',
+              skills: missing_skills.slice(0, 3),
+              courses: [
+                { name: `Introduction to ${target_role}`, provider: 'Coursera', link: 'https://www.coursera.org/' },
+                { name: 'Fundamentals Course', provider: 'Udemy', link: 'https://www.udemy.com/' },
+              ],
+              projects: ['Build a simple project using new skills', 'Complete hands-on exercises'],
+            },
+            {
+              phase: 'Skill Development',
+              duration: '3-4 months',
+              skills: missing_skills.slice(3, 6),
+              courses: [
+                { name: 'Advanced Topics', provider: 'Pluralsight', link: 'https://www.pluralsight.com/' },
+              ],
+              projects: ['Create a portfolio project', 'Contribute to real-world scenarios'],
+            },
+            {
+              phase: 'Mastery & Specialization',
+              duration: '2-3 months',
+              skills: missing_skills.slice(6),
+              courses: [
+                { name: 'Expert Level Training', provider: 'LinkedIn Learning', link: 'https://www.linkedin.com/learning/' },
+              ],
+              projects: ['Build a comprehensive capstone project', 'Prepare for certifications'],
+            },
+          ],
+        };
+      }
+    }
+
+    const roadmap = {
+      id: crypto.randomUUID(),
+      user_id,
+      target_role,
+      roadmap_data: roadmapData,
+      progress: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error: insertError } = await supabase
+      .from('roadmaps')
+      .insert(roadmap);
+
+    if (insertError) throw insertError;
+
+    return new Response(
+      JSON.stringify({ roadmap }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
+});
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
+};
+
+const roleQuestions: Record<string, string[]> = {
+  'Software Engineer': [
+    'Explain the difference between a process and a thread.',
+    'What are the key principles of object-oriented programming?',
+    'How would you optimize a slow database query?',
+    'Describe your experience with version control systems.',
+    'What testing strategies do you typically use?',
+  ],
+  'Data Scientist': [
+    'Explain the bias-variance tradeoff in machine learning.',
+    'How do you handle missing data in a dataset?',
+    'What is the difference between supervised and unsupervised learning?',
+    'Describe a machine learning project you worked on.',
+    'How do you evaluate the performance of a classification model?',
+  ],
+  'Product Manager': [
+    'How do you prioritize features in a product roadmap?',
+    'Describe a time when you had to make a difficult product decision.',
+    'How do you gather and incorporate user feedback?',
+    'What metrics do you use to measure product success?',
+    'How do you work with engineering teams to deliver features?',
+  ],
+};
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
+  }
+
+  try {
+    const { user_id, target_role, resume_data } = await req.json();
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    let questions: string[] = [];
+
+    if (roleQuestions[target_role]) {
+      questions = roleQuestions[target_role];
+    } else {
+      const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+      if (openaiKey) {
+        const aiPrompt = `Generate 5 interview questions for a ${target_role} position.
+        Candidate's background:
+        - Skills: ${resume_data.skills?.join(', ') || 'N/A'}
+        - Experience: ${resume_data.experience?.join(', ') || 'N/A'}
+
+        Return only a JSON array of 5 question strings.`;
+
+        const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            messages: [
+              { role: 'system', content: 'You are an expert technical interviewer.' },
+              { role: 'user', content: aiPrompt },
+            ],
+            temperature: 0.7,
+          }),
+        });
+
+        const aiData = await aiResponse.json();
+        questions = JSON.parse(aiData.choices[0].message.content);
+      } else {
+        questions = [
+          'Tell me about your background and experience.',
+          'What interests you about this role?',
+          'Describe a challenging project you worked on.',
+          'How do you stay updated with industry trends?',
+          'Where do you see yourself in 5 years?',
+        ];
+      }
+    }
+
+    const interview = {
+      id: crypto.randomUUID(),
+      user_id,
+      target_role,
+      questions,
+      answers: [],
+      feedback: [],
+      overall_score: 0,
+      communication_score: 0,
+      technical_score: 0,
+      clarity_score: 0,
+      status: 'in_progress',
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    };
+
+    const { error: insertError } = await supabase
+      .from('interviews')
+      .insert(interview);
+
+    if (insertError) throw insertError;
+
+    return new Response(
+      JSON.stringify({ interview_id: interview.id, questions }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
+});
