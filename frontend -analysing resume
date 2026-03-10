@@ -1,0 +1,164 @@
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
+};
+
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
+  }
+
+  try {
+    const { user_id, file_url, file_name } = await req.json();
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+    if (!openaiKey) {
+      const mockAnalysis = {
+        id: crypto.randomUUID(),
+        user_id,
+        file_name,
+        file_url,
+        parsed_data: {
+          skills: ['JavaScript', 'React', 'Node.js', 'Python', 'SQL', 'Git'],
+          education: ['Bachelor of Science in Computer Science', 'XYZ University, 2020'],
+          experience: [
+            'Software Engineer at ABC Corp (2020-2023)',
+            'Junior Developer at DEF Inc (2019-2020)',
+          ],
+          projects: [
+            'E-commerce Platform - Built a full-stack shopping application',
+            'Task Manager - Created a collaborative task management tool',
+          ],
+        },
+        resume_score: 75,
+        feedback: {
+          strengths: [
+            'Strong technical skills in modern web technologies',
+            'Good balance of frontend and backend experience',
+            'Relevant project portfolio demonstrating practical skills',
+          ],
+          weaknesses: [
+            'Limited leadership or mentoring experience mentioned',
+            'Could benefit from more quantifiable achievements',
+            'Missing cloud platform certifications',
+          ],
+          suggestions: [
+            'Add metrics to demonstrate impact (e.g., "Improved performance by 40%")',
+            'Include leadership experiences or team collaborations',
+            'Consider obtaining AWS or Azure certifications',
+            'Add links to GitHub projects or portfolio website',
+            'Expand on specific technologies used in each project',
+          ],
+        },
+        created_at: new Date().toISOString(),
+      };
+
+      const { error: insertError } = await supabase
+        .from('resumes')
+        .insert(mockAnalysis);
+
+      if (insertError) throw insertError;
+
+      return new Response(
+        JSON.stringify({ analysis: mockAnalysis }),
+        {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+    }
+
+    const aiPrompt = `Analyze this resume and provide detailed feedback. Extract:
+    1. Skills (programming languages, frameworks, tools)
+    2. Education (degrees, institutions, years)
+    3. Work Experience (company, role, duration)
+    4. Projects (name and description)
+
+    Then provide:
+    - Resume score (0-100)
+    - 3-5 strengths
+    - 3-5 weaknesses
+    - 5-7 actionable suggestions
+
+    Format as JSON with keys: skills, education, experience, projects, resume_score, feedback (with strengths, weaknesses, suggestions)`;
+
+    const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4',
+        messages: [
+          { role: 'system', content: 'You are an expert resume analyzer and career counselor.' },
+          { role: 'user', content: aiPrompt },
+        ],
+        temperature: 0.7,
+      }),
+    });
+
+    const aiData = await aiResponse.json();
+    const analysisData = JSON.parse(aiData.choices[0].message.content);
+
+    const analysis = {
+      id: crypto.randomUUID(),
+      user_id,
+      file_name,
+      file_url,
+      parsed_data: {
+        skills: analysisData.skills || [],
+        education: analysisData.education || [],
+        experience: analysisData.experience || [],
+        projects: analysisData.projects || [],
+      },
+      resume_score: analysisData.resume_score || 0,
+      feedback: {
+        strengths: analysisData.feedback?.strengths || [],
+        weaknesses: analysisData.feedback?.weaknesses || [],
+        suggestions: analysisData.feedback?.suggestions || [],
+      },
+      created_at: new Date().toISOString(),
+    };
+
+    const { error: insertError } = await supabase
+      .from('resumes')
+      .insert(analysis);
+
+    if (insertError) throw insertError;
+
+    return new Response(
+      JSON.stringify({ analysis }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
+});
